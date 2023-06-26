@@ -636,7 +636,14 @@ class Community(snscrape.base.Item):
 class Trend(snscrape.base.Item):
 	name: str
 	domainContext: str
+	position: typing.Optional[int] = None
 	metaDescription: typing.Optional[str] = None
+	topicIds: typing.Optional[typing.List[str]] = None
+	clusterId: typing.Optional[str] = None
+	relatedTerms: typing.Optional[typing.List[str]] = None
+	associatedCuratedTweetIds: typing.Optional[typing.List[str]] = None
+	displayedTopicId: typing.Optional[str] = None
+	containsCuratedTitle: typing.Optional[bool] = None
 
 	def __str__(self):
 		return f'https://twitter.com/search?q={urllib.parse.quote(self.name)}'
@@ -2269,7 +2276,7 @@ class TwitterTrendsScraper(_TwitterAPIScraper):
 			'include_ext_trusted_friends_metadata': 'true',
 			'send_error_codes': 'true',
 			'simple_quoted_tweet': 'true',
-			'count': '20',
+			'count': '100',
 			'candidate_source': 'trends',
 			'include_page_configuration': 'false',
 			'entity_tokens': 'false',
@@ -2283,8 +2290,21 @@ class TwitterTrendsScraper(_TwitterAPIScraper):
 				if entry['entryId'] != 'trends':
 					continue
 				for item in entry['content']['timelineModule']['items']:
+					# print(json.dumps(item, indent = 4))
 					trend = item['item']['content']['trend']
-					yield Trend(name = trend['name'], metaDescription = trend['trendMetadata'].get('metaDescription'), domainContext = trend['trendMetadata']['domainContext'])
+					details = item['item']['clientEventInfo']['details']['guideDetails']['transparentGuideDetails']
+					yield Trend(
+						name=trend['name'],
+						domainContext=trend['trendMetadata']['domainContext'],
+						position=details['trendMetadata']['position'],
+						metaDescription=trend['trendMetadata'].get('metaDescription'),
+						topicIds=details['trendMetadata'].get('topicIds'),
+						displayedTopicId=details['trendMetadata'].get('displayedTopicId'),
+						clusterId=details['trendMetadata'].get('clusterId'),
+						associatedCuratedTweetIds=details['trendMetadata'].get('associatedCuratedTweetIds'),
+						containsCuratedTitle=details['trendMetadata'].get('containsCuratedTitle'),
+					)
+
 
 
 class TwitterUsersScraper(_TwitterAPIScraper):
@@ -2316,6 +2336,5 @@ class TwitterUsersScraper(_TwitterAPIScraper):
 	@classmethod
 	def _cli_from_args(cls, args):
 		return cls._cli_construct(args, args.userId)
-
 
 __getattr__, __dir__ = snscrape.utils.module_deprecation_helper(__all__, DescriptionURL = TextLink)
