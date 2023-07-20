@@ -92,10 +92,18 @@ import typing
 import urllib.parse
 import urllib3.util.ssl_
 import warnings
+from pprint import pformat
 
 
 _logger = logging.getLogger(__name__)
 _CIPHERS_CHROME = 'TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA:AES256-SHA'
+
+
+@dataclasses.dataclass
+class PromotedMetadata:
+    promotedBy: typing.Union['User', 'UserRef']
+    metadata: typing.Dict[str, typing.Any]
+
 
 
 @dataclasses.dataclass
@@ -159,6 +167,9 @@ class Tweet(snscrape.base.Item):
         'links (tcourl attribute)')
     content = snscrape.base._DeprecatedProperty(
         'content', lambda self: self.rawContent, 'rawContent')
+
+    promoted: bool = False
+    promotedMetadata: typing.Optional[PromotedMetadata] = None
 
     def __str__(self):
         return self.url
@@ -861,6 +872,8 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
         self._baseUrl = baseUrl
         self._methodKeyMap = methodKeyMap
         self._methodFeatures = methodFeatures
+
+        print(self._methodFeatures)
 
         # if guestTokenManager is None:
         #     global _globalGuestTokenManager
@@ -1837,7 +1850,11 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
             return Tombstone(id=tweetId)
 
     def _graphql_timeline_tweet_item_result_to_tweet(
-            self, result, tweetId=None, **kwargs):
+        self,
+        result,
+        tweetId=None,
+        **kwargs
+    ):
         if result['__typename'] == 'Tweet':
             pass
         elif result['__typename'] == 'TweetWithVisibilityResults':
@@ -1926,6 +1943,38 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
                     else:
                         _logger.warning(
                             'Got unrecognised timeline tweet item(s)')
+                elif entry['entryId'].startswith('promoted-tweet-'):
+                    tweetId = int(entry['entryId'].split('-')[2])
+                    if entry['content']['entryType'] == 'TimelineTimelineItem' and entry['content']['itemContent']['itemType'] == 'TimelineTweet':
+                        if 'result' not in entry['content']['itemContent']['tweet_results']:
+                            _logger.warning(
+                                f'Skipping empty tweet entry {entry["entryId"]}')
+                            continue
+                        # @WORKING
+                        promotedMetadata = entry['content']['itemContent']['promotedMetadata']
+                        advertiser = promotedMetadata.get('advertiser_results')
+                        del promotedMetadata['advertiser_results']
+
+                        if advertiser and advertiser.get('result', {}).get('__typename') == 'User':
+                            advertiser = self._graphql_user_results_to_user(
+                                advertiser,
+                                
+                            )
+
+                        yield self._graphql_timeline_tweet_item_result_to_tweet(
+                            entry['content']['itemContent']['tweet_results']['result'],
+                            tweetId=tweetId,
+                            promoted=True,
+                            promotedMetadata=PromotedMetadata(
+                                promotedBy=advertiser,
+                                metadata=promotedMetadata
+                            ),
+                            **kwargs
+                        )
+                    else:
+                        _logger.warning(
+                            'Got unrecognised timeline tweet item(s)')
+
                 elif entry['entryId'].startswith(('homeConversation-', 'profile-conversation-')):
                     if entry['content']['entryType'] == 'TimelineTimelineModule':
                         for item in reversed(entry['content']['items']):
@@ -1955,6 +2004,7 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
                                 item['entryId'][len(entry['entryId']) + 7:])
                             yield self._graphql_timeline_tweet_item_result_to_tweet(item['item']['itemContent']['tweet_results']['result'], tweetId=tweetId, **kwargs)
                 elif not entry['entryId'].startswith(('cursor-', 'toptabsrpusermodule-', 'tweetdetailrelatedtweets-', 'label-')):
+                    _logger.warning(pformat(entry))
                     _logger.warning(
                         f'Skipping unrecognised entry ID: {entry["entryId"]!r}')
 

@@ -112,6 +112,11 @@ class Item(_JSONDataclass):
 	An item can really be anything. The string representation should be useful for the CLI output (e.g. a direct URL for the item).
 	'''
 
+	def dict(self):
+		'''Convert the item to a dict'''
+
+		return dataclasses.asdict(self)
+
 	@abc.abstractmethod
 	def __str__(self):
 		pass
