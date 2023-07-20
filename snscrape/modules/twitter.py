@@ -870,25 +870,23 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
     ):
         super().__init__(**kwargs)
         self._baseUrl = baseUrl
-        self._methodKeyMap = methodKeyMap
-        self._methodFeatures = methodFeatures
 
-        print(self._methodFeatures)
+        self.update_credentials(
+            authorizationHeader,
+            cookies,
+            csrfToken,
+            methodKeyMap,
+            methodFeatures,
+        )
 
-        # if guestTokenManager is None:
-        #     global _globalGuestTokenManager
-        #     if _globalGuestTokenManager is None:
-        #         _globalGuestTokenManager = GuestTokenManager()
-        #     guestTokenManager = _globalGuestTokenManager
-        # self._guestTokenManager = guestTokenManager
         self._maxEmptyPages = maxEmptyPages
-        self._apiHeaders = {
-            'Authorization': authorizationHeader,
-            'Referer': self._baseUrl,
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Cookie': '; '.join(f'{k}={v}' for k, v in cookies.items()),
-            'x-csrf-token': csrfToken,
-        }
+        # self._apiHeaders = {
+        #     'Authorization': authorizationHeader,
+        #     'Referer': self._baseUrl,
+        #     'Accept-Language': 'en-US,en;q=0.5',
+        #     'Cookie': '; '.join(f'{k}={v}' for k, v in cookies.items()),
+        #     'x-csrf-token': csrfToken,
+        # }
         adapter = _TwitterTLSAdapter()
         self._session.mount('https://twitter.com', adapter)
         self._session.mount('https://api.twitter.com', adapter)
@@ -901,6 +899,26 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
         #     secure=True,
         #     expires=self._guestTokenManager.setTime +
         #     _GUEST_TOKEN_VALIDITY)
+
+    def update_credentials(
+        self,
+        authorizationHeader: str,
+        cookies: dict[str, str],
+        csrfToken: str,
+        methodKeyMap: dict[str, str],
+        methodFeatures: dict[str, dict[str, str]],
+    ):
+        self._methodKeyMap = methodKeyMap
+        self._methodFeatures = methodFeatures
+
+        self._apiHeaders = {
+            'Authorization': authorizationHeader,
+            'Referer': self._baseUrl,
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Cookie': '; '.join(f'{k}={v}' for k, v in cookies.items()),
+            'x-csrf-token': csrfToken,
+        }
+
 
     # def _check_guest_token_response(self, r):
     #     if r.status_code != 200:
@@ -969,6 +987,8 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
 
     def _check_api_response(self, r, apiType, instructionsPath):
         if r.status_code in (403, 404, 429):
+            print(r.text)
+            print(r.headers)
             if r.status_code == 429 and r.headers.get(
                     'x-rate-limit-remaining', '') == '0' and 'x-rate-limit-reset' in r.headers:
                 blockUntil = min(
@@ -2290,10 +2310,19 @@ class TwitterSearchScraper(_TwitterAPIScraper):
 class TwitterUserScraper(TwitterSearchScraper):
     name = 'twitter-user'
 
-    def __init__(self, user, **kwargs):
+    def __init__(
+        self,
+        user: str | int,
+        since_datetime: datetime.datetime | None = None,
+        until_datetime: datetime.datetime | None = None,
+        since_id: int | None = None,
+        until_id: int | None = None,
+        **kwargs
+    ):
         self._isUserId = isinstance(user, int)
         if not self._isUserId and not self.is_valid_username(user):
             raise ValueError('Invalid username')
+            
         super().__init__(f'from:{user}', **kwargs)
         self._user = user
         self._baseUrl = f'https://twitter.com/{self._user}' \
@@ -2308,9 +2337,9 @@ class TwitterUserScraper(TwitterSearchScraper):
             fieldName = 'userId'
             endpoint = self._get_api_url('UserByRestId')
         variables = {
-            fieldName: str(
-                self._user),
-            'withSafetyModeUserFields': True}
+            fieldName: str(self._user),
+            'withSafetyModeUserFields': True
+        }
         features = {
             'blue_business_profile_image_shape_enabled': True,
             'responsive_web_graphql_exclude_directive_enabled': True,
@@ -2327,7 +2356,8 @@ class TwitterUserScraper(TwitterSearchScraper):
             _TwitterAPIType.GRAPHQL,
             params={
                 'variables': variables,
-                'features': features},
+                'features': features
+            },
             instructionsPath=[
                 'data',
                 'user'])
@@ -2391,7 +2421,7 @@ class TwitterProfileScraper(TwitterUserScraper):
 
         paginationVariables = {
             'userId': userId,
-            'count': 100,
+            'count': 40,
             'cursor': None,
             'includePromotedContent': True,
             'withCommunity': True,
@@ -2401,34 +2431,57 @@ class TwitterProfileScraper(TwitterUserScraper):
         variables = paginationVariables.copy()
         del variables['cursor']
         features = {
-            'rweb_lists_timeline_redesign_enabled': False,
-            'blue_business_profile_image_shape_enabled': True,
+            'rweb_lists_timeline_redesign_enabled': True,
             'responsive_web_graphql_exclude_directive_enabled': True,
             'verified_phone_label_enabled': False,
-            'creator_subscriptions_tweet_preview_api_enabled': False,
+            'creator_subscriptions_tweet_preview_api_enabled': True,
             'responsive_web_graphql_timeline_navigation_enabled': True,
             'responsive_web_graphql_skip_user_profile_image_extensions_enabled': False,
             'tweetypie_unmention_optimization_enabled': True,
-            'vibe_api_enabled': True,
             'responsive_web_edit_tweet_api_enabled': True,
             'graphql_is_translatable_rweb_tweet_is_translatable_enabled': True,
             'view_counts_everywhere_api_enabled': True,
             'longform_notetweets_consumption_enabled': True,
+            'responsive_web_twitter_article_tweet_consumption_enabled': False,
             'tweet_awards_web_tipping_enabled': False,
             'freedom_of_speech_not_reach_fetch_enabled': True,
             'standardized_nudges_misinfo': True,
-            'tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled': False,
-            'interactive_text_enabled': True,
-            'responsive_web_text_conversations_enabled': False,
+            'tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled': True,
             'longform_notetweets_rich_text_read_enabled': True,
-            'longform_notetweets_inline_media_enabled': False,
-            'responsive_web_enhance_cards_enabled': False,
+            'longform_notetweets_inline_media_enabled': True,
+            'responsive_web_media_download_video_enabled': False,
+            'responsive_web_enhance_cards_enabled': False
         }
+        # features = {
+        #     'rweb_lists_timeline_redesign_enabled': False,
+        #     'blue_business_profile_image_shape_enabled': True,
+        #     'responsive_web_graphql_exclude_directive_enabled': True,
+        #     'verified_phone_label_enabled': False,
+        #     'creator_subscriptions_tweet_preview_api_enabled': False,
+        #     'responsive_web_graphql_timeline_navigation_enabled': True,
+        #     'responsive_web_graphql_skip_user_profile_image_extensions_enabled': False,
+        #     'tweetypie_unmention_optimization_enabled': True,
+        #     'vibe_api_enabled': True,
+        #     'responsive_web_edit_tweet_api_enabled': True,
+        #     'graphql_is_translatable_rweb_tweet_is_translatable_enabled': True,
+        #     'view_counts_everywhere_api_enabled': True,
+        #     'longform_notetweets_consumption_enabled': True,
+        #     'tweet_awards_web_tipping_enabled': False,
+        #     'freedom_of_speech_not_reach_fetch_enabled': True,
+        #     'standardized_nudges_misinfo': True,
+        #     'tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled': False,
+        #     'interactive_text_enabled': True,
+        #     'responsive_web_text_conversations_enabled': False,
+        #     'longform_notetweets_rich_text_read_enabled': True,
+        #     'longform_notetweets_inline_media_enabled': False,
+        #     'responsive_web_enhance_cards_enabled': False,
+        # }
 
         params = {'variables': variables, 'features': features}
         paginationParams = {
             'variables': paginationVariables,
-            'features': features}
+            'features': features
+        }
 
         features = self._get_features('UserTweetsAndReplies', features)
 
@@ -2856,9 +2909,8 @@ class TwitterCommunityScraper(_TwitterAPIScraper):
 
         paginationParams = {
             'variables': paginationVariables,
-            'features': features}
-
-        # params['features'] = 
+            'features': features
+        }
 
         for obj in self._iter_api_data(
             self._get_api_url('CommunitiesTimelineQuery'), 
@@ -2880,7 +2932,8 @@ class TwitterCommunityScraper(_TwitterAPIScraper):
 class TwitterTrendsScraper(_TwitterAPIScraper):
     name = 'twitter-trends'
 
-    def __init__(self, **kwargs):
+    def __init__(self, count: int = 20, **kwargs):
+        self._count = count
         super().__init__('https://twitter.com/i/trends', **kwargs)
 
     def get_items(self):
@@ -2909,7 +2962,7 @@ class TwitterTrendsScraper(_TwitterAPIScraper):
             'include_ext_trusted_friends_metadata': 'true',
             'send_error_codes': 'true',
             'simple_quoted_tweet': 'true',
-            'count': '20',
+            'count': str(self._count),
             'candidate_source': 'trends',
             'include_page_configuration': 'false',
             'entity_tokens': 'false',
@@ -2927,7 +2980,11 @@ class TwitterTrendsScraper(_TwitterAPIScraper):
                     continue
                 for item in entry['content']['timelineModule']['items']:
                     trend = item['item']['content']['trend']
-                    yield Trend(name=trend['name'], metaDescription=trend['trendMetadata'].get('metaDescription'), domainContext=trend.get('trendMetadata', {}).get('domainContext'))
+                    yield Trend(
+                        name=trend['name'],
+                        metaDescription=trend['trendMetadata'].get('metaDescription'),
+                        domainContext=trend.get('trendMetadata', {}).get('domainContext')
+                    )
 
 
 class TwitterUsersScraper(_TwitterAPIScraper):

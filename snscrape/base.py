@@ -112,7 +112,7 @@ class Item(_JSONDataclass):
 	An item can really be anything. The string representation should be useful for the CLI output (e.g. a direct URL for the item).
 	'''
 
-	def dict(self):
+	def to_dict(self):
 		'''Convert the item to a dict'''
 
 		return dataclasses.asdict(self)
@@ -230,6 +230,7 @@ class Scraper:
 				_logger.debug(f'... with environmentSettings: {environmentSettings!r}')
 			try:
 				r = self._session.send(req, allow_redirects = allowRedirects, timeout = timeout, **environmentSettings)
+				print(r.text)
 			except requests.exceptions.RequestException as exc:
 				if attempt < self._retries:
 					retrying = ', retrying'
@@ -270,6 +271,8 @@ class Scraper:
 				_logger.info(f'Waiting {sleepTime:.0f} seconds')
 				time.sleep(sleepTime)
 		else:
+			_logger.error(r.headers)
+			_logger.error(r.text)
 			msg = f'{self._retries + 1} requests to {req.url} failed, giving up.'
 			_logger.fatal(msg)
 			_logger.fatal(f'Errors: {", ".join(errors)}')
