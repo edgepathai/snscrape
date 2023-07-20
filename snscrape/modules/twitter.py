@@ -95,9 +95,6 @@ import warnings
 
 
 _logger = logging.getLogger(__name__)
-# _API_AUTHORIZATION_HEADER = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA'
-# _globalGuestTokenManager = None
-# _GUEST_TOKEN_VALIDITY = 10800
 _CIPHERS_CHROME = 'TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA:AES256-SHA'
 
 
@@ -595,7 +592,9 @@ class User(snscrape.base.Item):
     profileImageShape: typing.Optional['ProfileImageShape'] = None
 
     descriptionUrls = snscrape.base._DeprecatedProperty(
-        'descriptionUrls', lambda self: self.descriptionLinks, 'descriptionLinks')
+        'descriptionUrls',
+        lambda self: self.descriptionLinks, 'descriptionLinks'
+    )
     linkUrl = snscrape.base._DeprecatedProperty(
         'linkUrl', lambda self: self.link.url if self.link else None, 'link.url')
     linkTcourl = snscrape.base._DeprecatedProperty(
@@ -603,7 +602,9 @@ class User(snscrape.base.Item):
         lambda self: self.link.tcourl if self.link else None,
         'link.tcourl')
     description = snscrape.base._DeprecatedProperty(
-        'description', lambda self: self.renderedDescription, 'renderedDescription')
+        'description',
+        lambda self: self.renderedDescription, 'renderedDescription'
+    )
 
     @property
     def url(self):
@@ -831,7 +832,8 @@ class _TwitterTLSAdapter(snscrape.base._HTTPSAdapter):
         # urllib3.util.create_urllib3_context instead of the private,
         # undocumented ssl_ module.
         kwargs['ssl_context'] = urllib3.util.ssl_.create_urllib3_context(
-            ciphers=_CIPHERS_CHROME)
+            ciphers=_CIPHERS_CHROME
+        )
         super().init_poolmanager(*args, **kwargs)
 
 
@@ -2091,8 +2093,16 @@ class TwitterSearchScraperMode(enum.Enum):
 class TwitterSearchScraper(_TwitterAPIScraper):
     name = 'twitter-search'
 
-    def __init__(self, query, *, cursor=None, mode=TwitterSearchScraperMode.LIVE,
-                 top=None, maxEmptyPages=20, **kwargs):
+    def __init__(
+        self,
+        query,
+        *,
+        cursor=None,
+        mode=TwitterSearchScraperMode.LIVE,
+        top=None,
+        maxEmptyPages=20,
+        **kwargs
+    ):
         if not query.strip():
             raise ValueError('empty query')
         if mode not in tuple(TwitterSearchScraperMode):
@@ -2218,8 +2228,13 @@ class TwitterSearchScraper(_TwitterAPIScraper):
 
     @classmethod
     def _cli_from_args(cls, args):
-        return cls._cli_construct(args, args.query, cursor=args.cursor, mode=TwitterSearchScraperMode._cli_from_args(
-            args), maxEmptyPages=args.maxEmptyPages)
+        return cls._cli_construct(
+            args,
+            args.query,
+            cursor=args.cursor,
+            mode=TwitterSearchScraperMode._cli_from_args(args),
+            maxEmptyPages=args.maxEmptyPages
+        )
 
 
 class TwitterUserScraper(TwitterSearchScraper):
@@ -2231,7 +2246,8 @@ class TwitterUserScraper(TwitterSearchScraper):
             raise ValueError('Invalid username')
         super().__init__(f'from:{user}', **kwargs)
         self._user = user
-        self._baseUrl = f'https://twitter.com/{self._user}' if not self._isUserId else f'https://twitter.com/i/user/{self._user}'
+        self._baseUrl = f'https://twitter.com/{self._user}' \
+            if not self._isUserId else f'https://twitter.com/i/user/{self._user}'
 
     def _get_entity(self):
         self._ensure_guest_token()
@@ -2384,8 +2400,9 @@ class TwitterProfileScraper(TwitterUserScraper):
                 for instruction in instructions:
                     if instruction['type'] == 'TimelinePinEntry':
                         gotPinned = True
-                        tweetId = int(instruction['entry']['entryId'][6:]) if instruction['entry']['entryId'].startswith(
-                            'tweet-') else None
+                        tweetId = int(instruction['entry']['entryId'][6:]) \
+                            if instruction['entry']['entryId'].startswith('tweet-') else None
+
                         yield self._graphql_timeline_tweet_item_result_to_tweet(instruction['entry']['content']['itemContent']['tweet_results']['result'], tweetId=tweetId, pinned=True)
             tweets = list(
                 self._graphql_timeline_instructions_to_tweets(
@@ -2860,7 +2877,7 @@ class TwitterTrendsScraper(_TwitterAPIScraper):
                     continue
                 for item in entry['content']['timelineModule']['items']:
                     trend = item['item']['content']['trend']
-                    yield Trend(name=trend['name'], metaDescription=trend['trendMetadata'].get('metaDescription'), domainContext=trend['trendMetadata']['domainContext'])
+                    yield Trend(name=trend['name'], metaDescription=trend['trendMetadata'].get('metaDescription'), domainContext=trend.get('trendMetadata', {}).get('domainContext'))
 
 
 class TwitterUsersScraper(_TwitterAPIScraper):
@@ -2911,7 +2928,6 @@ class TwitterUsersScraper(_TwitterAPIScraper):
     @classmethod
     def _cli_from_args(cls, args):
         return cls._cli_construct(args, args.userId)
-
 
 
 class TwitterFollowingScraper(_TwitterAPIScraper):
