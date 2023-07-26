@@ -93,7 +93,7 @@ import urllib.parse
 import urllib3.util.ssl_
 import warnings
 from pprint import pformat
-
+# from urllib.parse import urlsplit, urljoin
 
 _logger = logging.getLogger(__name__)
 _CIPHERS_CHROME = 'TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA:AES128-GCM-SHA256:AES256-GCM-SHA384:AES128-SHA:AES256-SHA'
@@ -853,35 +853,78 @@ class _TwitterAPIType(enum.Enum):
     GRAPHQL = 1
 
 
-from urllib.parse import urlsplit, urljoin
+class TwitterAuthContext(typing.NamedTuple):
+    authorizationHeader: str
+    cookies: dict[str, str]
+    csrfToken: typing.Optional[str] = None
+
+
 
 class TwitterSessionManager:
 
     def __init__(
         self,
-        authorizationHeader: str,
-        cookies: dict[str, str],
-        csrfToken: str,
+        contexts: typing.List[TwitterAuthContext],
+        # authorizationHeader: str,
+        # cookies: dict[str, str],
+        # csrfToken: typing.Optional[str] = None,
         sleepOnExhaustedRateLimit: bool = True,
     ):
-        self._authorizationHeader = authorizationHeader
-        self._cookies = cookies
-        self._csrfToken = csrfToken
+        self._contexts = contexts
+        self._current_context = collections.defaultdict(lambda: 0)
+        self._daily_rate_limits = collections.defaultdict(
+            lambda: collections.defaultdict(dict)
+        )
+        self._context_info = collections.defaultdict(
+            lambda: collections.defaultdict(dict)
+        )
+
+        # self._authorizationHeader = authorizationHeader
+        # self._cookies = cookies
+        # self._csrfToken = csrfToken or cookies.get('ct0')
         self._sleepOnExhaustedRateLimit = sleepOnExhaustedRateLimit
 
-        self._endpointRequests = collections.defaultdict(dict)
-        self._endpointCursors = collections.defaultdict(dict)
+        # self._endpointRequests = collections.defaultdict(dict)
+        # self._endpointCursors = collections.defaultdict(dict)
 
     def clean_path(self, path):
-        return urlsplit(urljoin('https://twitter.com', path)).path
+        return urllib.parse.urlsplit(
+            urllib.parse.urljoin('https://twitter.com', path)).path
 
-    def get_api_headers(self):
+    def get_context(self, ix: int):
+        return self._contexts[ix]
+    
+    def get_context_info(self, ix: int):
+        return self._context_info[ix]
+
+    # @property
+    # def context(self):
+    #     return self._contexts[self._current_context]
+
+    # @property
+    # def context_info(self):
+    #     return self._context_info[self._current_context]
+    
+    # def next_context(self, next_by: int = 1):
+    #     return self._context_info[(self._current_context + next_by) % len(self._contexts)]
+
+    # def increment_context(self):
+    #     self._current_context = (self._current_context + 1) % len(self._contexts)
+
+    def get_api_headers(self, path: typing.Optional[str] = None):
+        path = self.clean_path(path) if path else '__default__'
+
+        context = self.get_context(
+            self._current_context[path]
+        )
+
         return {
-            'Authorization': self._authorizationHeader,
-            # 'Referer': self._baseUrl,
+            'Authorization': context.authorizationHeader,
             'Accept-Language': 'en-US,en;q=0.5',
-            'Cookie': '; '.join(f'{k}={v}' for k, v in self._cookies.items()),
-            'x-csrf-token': self._csrfToken,
+            'Cookie': '; '.join(
+                f'{k}={v}' for k, v in context.cookies.items()
+            ),
+            'x-csrf-token': context.csrfToken,
         }
 
     def on_before_request(
@@ -889,49 +932,151 @@ class TwitterSessionManager:
         path: str,
     ):
         path = self.clean_path(path)
-        _logger.info(f'on_before_request - path:{path}')
-        rate_limit = self._endpointRequests.get(path, {}).get('limit')
-        if rate_limit:
-            rate_limit = int(rate_limit)
-        rate_limit_remaining = self._endpointRequests.get(path, {}).get('remaining')
 
-        if rate_limit_remaining:
-            rate_limit_remaining = int(rate_limit_remaining)
-        rate_limit_reset = self._endpointRequests.get(path, {}).get('reset')
+        default_limit = 100
 
-        if rate_limit_reset:
-            rate_limit_reset = int(rate_limit_reset)
+        # default_reset_in = int(datetime.datetime.now().timestamp()) + 1000
 
-            _logger.info(datetime.datetime.fromtimestamp(
-                    rate_limit_reset
-                ))
+        current_context_idx = self._current_context[path]
 
-        if rate_limit_reset:
-            resets_in_seconds = (rate_limit_reset - int(
-                datetime.datetime.now().timestamp()))
-        else:
-            resets_in_seconds = -1
+        _logger.info(f'current context idx {current_context_idx}')
 
-        _logger.info(f'on_before_request: {rate_limit_remaining}/{rate_limit} - resets in  {resets_in_seconds}')
+        context_info = self.get_context_info(current_context_idx)
+
+        _logger.info(context_info[path])
+
+        # rate_limit = context.get(
+        #     path, {}).get('limit', default_limit)
+
+        rate_limit_remaining = context_info.get(
+            path, {}).get('remaining', default_limit)
+        
+        _logger.info(f'rate_limit_remaining {rate_limit_remaining}')
+
+        # rate_limit_reset = context.get(
+        #     path, {}).get('reset', default_reset_in)
+
+        if rate_limit_remaining > 1:
+            return
 
         if rate_limit_remaining == 0:
-            _logger.info(f'Rate limit reached. Must sleep for {resets_in_seconds} seconds')
+
+            idx_reset_at = {
+                ix: self.get_context_info(ix=ix).get(path, {}).get('reset', -1)
+                for ix in range(len(self._contexts))
+            }
+
+            _logger.info(f'idx_reset_at {idx_reset_at}')
+
+            # get index of context with lowest reset time
+            min_reset_at_idx = min(idx_reset_at, key=idx_reset_at.get)
+
+            _logger.info(f'min_reset_at_idx {min_reset_at_idx}')
+
+            self._current_context[path] = min_reset_at_idx
+
+            min_reset_at = min(idx_reset_at.values())
+
+            _logger.info(f'min_reset_at {min_reset_at}')
+
+            if min_reset_at == -1:
+                return
+
+            resets_in_seconds = (min_reset_at - int(
+                datetime.datetime.now().timestamp()))
+
+            _logger.info(f'resets_in_seconds {resets_in_seconds}')
+
+            _logger.info((
+                f'Rate limit reached. Must sleep for '
+                f' {resets_in_seconds} seconds'
+            ))
+
             if self._sleepOnExhaustedRateLimit:
+                while (
+                    min_reset_at -
+                    int(datetime.datetime.now().timestamp())
+                ) > 0:
+                    resets_in_seconds = (
+                        min_reset_at -
+                        int(datetime.datetime.now().timestamp())
+                    )
+                    _logger.info(
+                        f'Waiting... {resets_in_seconds} seconds remaining')
 
-                while  (rate_limit_reset - int(datetime.datetime.now().timestamp())) > 0:
-                    resets_in_seconds = (rate_limit_reset - int(datetime.datetime.now().timestamp()))
-                    _logger.info(f'Waiting... {resets_in_seconds} seconds remaining')
+                    time.sleep(min(10, resets_in_seconds + 1))
 
-                    time.sleep(10)
-            else:
-                raise Exception('Rate limit reached')
+
+            # context =
+
+        # while True:
+        #     # if inc_contex
+        #     context = self.next_context(inc_context - 1)
+
+        
+
+        #     if rate_limit_remaining > 0:
+        #         break
+        #     else:
+        #         inc_context += 1
+
+        # _logger.info(f'on_before_request - path:{path}')
+
+        
+
+        
+
+        # if rate_limit_reset:
+        #     _logger.info(datetime.datetime.fromtimestamp(
+        #         rate_limit_reset
+        #     ))
+
+        # if rate_limit_reset:
+        #     resets_in_seconds = (rate_limit_reset - int(
+        #         datetime.datetime.now().timestamp()))
+        # else:
+        #     resets_in_seconds = -1
+
+        # _logger.info((
+        #     f'on_before_request: {rate_limit_remaining}/{rate_limit}'
+        #     f' - resets in  {resets_in_seconds}'
+        # ))
+
+        # if rate_limit_remaining == 0:
+
+        #     while True:
+        #         pass
             
+
+        #     _logger.info((
+        #         f'Rate limit reached. Must sleep for '
+        #         f' {resets_in_seconds} seconds'
+        #     ))
+
+        #     if self._sleepOnExhaustedRateLimit:
+
+        #         while (
+        #             rate_limit_reset -
+        #             int(datetime.datetime.now().timestamp())
+        #         ) > 0:
+        #             resets_in_seconds = (
+        #                 rate_limit_reset -
+        #                 int(datetime.datetime.now().timestamp())
+        #             )
+        #             _logger.info(
+        #                 f'Waiting... {resets_in_seconds} seconds remaining')
+
+        #             time.sleep(10)
+        #     else:
+        #         raise Exception('Rate limit reached')
+
     def on_paginate(
         self,
         path: str,
         cursor: str
     ):
-        self._endpointCursors[self.clean_path(path)] = cursor
+        path = self.clean_path(path)
+        self._context_info[self._current_context[path]]['cursor'] = cursor
 
     def on_response(
         self,
@@ -941,13 +1086,20 @@ class TwitterSessionManager:
         _logger.info(('url', response.request.path_url))
         _logger.info(('headers', response.headers))
         # _logger.info(response.headers.get('x-rate-limit-remaining'))
-        self._endpointRequests[path] = {
-            'limit': response.headers.get('x-rate-limit-limit'),
-            'remaining': response.headers.get('x-rate-limit-remaining'),
-            'reset': response.headers.get('x-rate-limit-reset'),
+        
+        if response.status_code == 429:
+            remaining = 0
+        else:
+            remaining = int(response.headers.get('x-rate-limit-remaining')) \
+                if response.headers.get('x-rate-limit-remaining') else 0
+
+        self._context_info[self._current_context[path]][path] = {
+            'limit': int(response.headers.get('x-rate-limit-limit')),
+            'remaining': remaining,
+            'reset': int(response.headers.get('x-rate-limit-reset')),
         }
 
-        _logger.info(self._endpointRequests[response.request.path_url])
+        # _logger.info(self._endpointRequests[response.request.path_url])
 
         # rate_limit = response.headers.get('X-Rate-Limit-Limit')
         # rate_limit_remaining = response.headers.get('X-Rate-Limit-Remaining')
@@ -971,7 +1123,7 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
         self._baseUrl = baseUrl
         self._methodKeyMap = methodKeyMap
         self._methodFeatures = methodFeatures
-        self._session_manager = sessionManager
+        self._sessionManager = sessionManager
         # self.update_credentials(
         #     authorizationHeader,
         #     cookies,
@@ -1001,10 +1153,16 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
         #     expires=self._guestTokenManager.setTime +
         #     _GUEST_TOKEN_VALIDITY)
 
-    @property
-    def _apiHeaders(self):
+    # @property
+    # def _apiHeaders(self):
+    #     return {
+    #         **self._sessionManager.get_api_headers(),
+    #         'Referer': self._baseUrl,
+    #     }
+
+    def _get_api_headers(self, path):
         return {
-            **self._session_manager.get_api_headers(),
+            **self._sessionManager.get_api_headers(path=path),
             'Referer': self._baseUrl,
         }
 
@@ -1094,10 +1252,10 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
         return _features
 
     def _check_api_response(self, r, apiType, instructionsPath):
-        self._session_manager.on_response(r)
+        self._sessionManager.on_response(r)
         if r.status_code in (403, 404, 429):
-            print(r.text)
-            print(r.headers)
+            # print(r.text)
+            # print(r.headers)
             if r.status_code == 429 and r.headers.get(
                     'x-rate-limit-remaining', '') == '0' and 'x-rate-limit-reset' in r.headers:
                 blockUntil = min(
@@ -1138,7 +1296,7 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
 
     def _get_api_data(self, endpoint, apiType, params, instructionsPath=None):
         self._ensure_guest_token()
-        self._session_manager.on_before_request(endpoint)
+        self._sessionManager.on_before_request(endpoint)
         if apiType is _TwitterAPIType.GRAPHQL:
             params = urllib.parse.urlencode(
                 {k: json.dumps(v, separators=(',', ':')) for k, v in params.items()},
@@ -1148,11 +1306,16 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
         r = self._get(
             endpoint,
             params=params,
-            headers=self._apiHeaders,
+            headers=self._get_api_headers(endpoint),
             responseOkCallback=functools.partial(
                 self._check_api_response,
                 apiType=apiType,
-                instructionsPath=instructionsPath))
+                instructionsPath=instructionsPath),
+            responseFailCallback=functools.partial(
+                self._check_api_response,
+                apiType=apiType,
+                instructionsPath=instructionsPath)
+        )
         return r._snscrapeObj
 
     def _iter_api_data(
@@ -1192,7 +1355,7 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
         emptyPages = 0
         while True:
             _logger.info(f'Retrieving scroll page {cursor}')
-            self._session_manager.on_paginate(endpoint, cursor)
+            self._sessionManager.on_paginate(endpoint, cursor)
             obj = self._get_api_data(
                 endpoint,
                 apiType,
@@ -2065,6 +2228,9 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
         for instruction in instructions:
             if instruction['type'] != 'TimelineAddEntries':
                 continue
+            _logger.info(f"page with {len(instruction['entries'])} items")
+            if len(instruction['entries']) <= 2:
+                _logger.info(pformat(instruction))
             for entry in instruction['entries']:
                 if entry['entryId'].startswith('tweet-'):
                     tweetId = int(entry['entryId'].split('-', 1)[1])
@@ -2138,7 +2304,7 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
                                 item['entryId'][len(entry['entryId']) + 7:])
                             yield self._graphql_timeline_tweet_item_result_to_tweet(item['item']['itemContent']['tweet_results']['result'], tweetId=tweetId, **kwargs)
                 elif not entry['entryId'].startswith(('cursor-', 'toptabsrpusermodule-', 'tweetdetailrelatedtweets-', 'label-')):
-                    _logger.warning(pformat(entry))
+                    # _logger.warning(pformat(entry))
                     _logger.warning(
                         f'Skipping unrecognised entry ID: {entry["entryId"]!r}')
 
@@ -2524,7 +2690,12 @@ class TwitterUserScraper(TwitterSearchScraper):
 class TwitterProfileScraper(TwitterUserScraper):
     name = 'twitter-profile'
 
-    def get_items(self):
+    def __init__(self, **kwargs):
+        kwargs['maxEmptyPages'] = 0
+        super().__init__(**kwargs)
+
+
+    def get_items(self, count: int = 40, cursor: str | None = None):
         if not self._isUserId:
             if self.entity is None:
                 raise snscrape.base.ScraperException(
@@ -2535,8 +2706,8 @@ class TwitterProfileScraper(TwitterUserScraper):
 
         paginationVariables = {
             'userId': userId,
-            'count': 40,
-            'cursor': None,
+            'count': count,
+            'cursor': cursor,
             'includePromotedContent': True,
             'withCommunity': True,
             'withVoice': True,
@@ -2566,30 +2737,7 @@ class TwitterProfileScraper(TwitterUserScraper):
             'responsive_web_media_download_video_enabled': False,
             'responsive_web_enhance_cards_enabled': False
         }
-        # features = {
-        #     'rweb_lists_timeline_redesign_enabled': False,
-        #     'blue_business_profile_image_shape_enabled': True,
-        #     'responsive_web_graphql_exclude_directive_enabled': True,
-        #     'verified_phone_label_enabled': False,
-        #     'creator_subscriptions_tweet_preview_api_enabled': False,
-        #     'responsive_web_graphql_timeline_navigation_enabled': True,
-        #     'responsive_web_graphql_skip_user_profile_image_extensions_enabled': False,
-        #     'tweetypie_unmention_optimization_enabled': True,
-        #     'vibe_api_enabled': True,
-        #     'responsive_web_edit_tweet_api_enabled': True,
-        #     'graphql_is_translatable_rweb_tweet_is_translatable_enabled': True,
-        #     'view_counts_everywhere_api_enabled': True,
-        #     'longform_notetweets_consumption_enabled': True,
-        #     'tweet_awards_web_tipping_enabled': False,
-        #     'freedom_of_speech_not_reach_fetch_enabled': True,
-        #     'standardized_nudges_misinfo': True,
-        #     'tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled': False,
-        #     'interactive_text_enabled': True,
-        #     'responsive_web_text_conversations_enabled': False,
-        #     'longform_notetweets_rich_text_read_enabled': True,
-        #     'longform_notetweets_inline_media_enabled': False,
-        #     'responsive_web_enhance_cards_enabled': False,
-        # }
+
 
         params = {'variables': variables, 'features': features}
         paginationParams = {
@@ -2606,7 +2754,8 @@ class TwitterProfileScraper(TwitterUserScraper):
             _TwitterAPIType.GRAPHQL,
             params,
             paginationParams,
-            instructionsPath=['data', 'user', 'result', 'timeline_v2', 'timeline', 'instructions']
+            instructionsPath=['data', 'user', 'result', 'timeline_v2', 'timeline', 'instructions'],
+            cursor=cursor
         ):
             if not obj['data'] or 'result' not in obj['data']['user']:
                 raise snscrape.base.ScraperException('Empty response')
@@ -2620,7 +2769,9 @@ class TwitterProfileScraper(TwitterUserScraper):
                         tweetId = int(instruction['entry']['entryId'][6:]) \
                             if instruction['entry']['entryId'].startswith('tweet-') else None
 
-                        yield self._graphql_timeline_tweet_item_result_to_tweet(instruction['entry']['content']['itemContent']['tweet_results']['result'], tweetId=tweetId, pinned=True)
+                        yield self._graphql_timeline_tweet_item_result_to_tweet(
+                            instruction['entry']['content']['itemContent']['tweet_results']['result'], tweetId=tweetId, pinned=True
+                        )
             tweets = list(
                 self._graphql_timeline_instructions_to_tweets(
                     instructions, pinned=False))
@@ -2898,27 +3049,118 @@ class TwitterTweetScraper(_TwitterAPIScraper):
             args, args.tweetId, mode=TwitterTweetScraperMode._cli_from_args(args))
 
 
+class TwitterHomeScraper(_TwitterAPIScraper):
+    name = 'twitter-home'
+
+    def __init__(self, **kwargs):
+        # self._listId = listId
+        kwargs['maxEmptyPages'] = 1
+        # self._mode = mode
+        super().__init__(
+            f'https://twitter.com/home',
+            **kwargs)
+
+    def get_items(self, count: int = 40, cursor: str = None):
+
+        paginationVariables = {
+            "count": count,
+            "includePromotedContent": True,
+            "latestControlAvailable": True,
+            "requestContext":"launch",
+            "withCommunity": True
+        }
+
+        variables = paginationVariables.copy()
+        del variables['cursor']
+
+        features = self._get_features('HomeTimeline', {})
+
+        params = {
+            'variables': variables,
+            'features': features,
+            'fieldToggles': {
+                "withAuxiliaryUserLabels": False, 
+                "withArticleRichContentState": False
+            }
+        }
+        paginationParams = {
+            'variables': paginationVariables,
+            'features': features,
+            'fieldToggles': {
+                "withAuxiliaryUserLabels": False,
+                "withArticleRichContentState": False
+            }
+        }
+        url = self._get_api_url('HomeTimeline')
+        instructionsPath = [
+            'data',
+            'list',
+            'tweets_timeline',
+            'timeline',
+            'instructions'
+        ]
+
+        for obj in self._iter_api_data(
+            url,
+            _TwitterAPIType.GRAPHQL,
+            params,
+            paginationParams,
+            direction=_ScrollDirection.BOTTOM,
+            instructionsPath=instructionsPath,
+            cursor=cursor
+        ):
+            if not obj['data']:
+                return
+
+            yield from self._graphql_timeline_instructions_to_tweets(
+                obj['data']['list']['tweets_timeline']['timeline']['instructions'], includeConversationThreads=True
+            )
+
+
+    @classmethod
+    def _cli_setup_parser(cls, subparser):
+        group = subparser.add_mutually_exclusive_group(required=False)
+        group.add_argument(
+            '--scroll',
+            action='store_true',
+            default=False,
+            help='Enable scrolling in both directions')
+        group.add_argument(
+            '--recurse',
+            '--recursive',
+            action='store_true',
+            default=False,
+            help='Enable recursion through all tweets encountered (warning: slow, potentially memory-intensive!)')
+        subparser.add_argument('tweetId', type=int, help='A tweet ID')
+
+    @classmethod
+    def _cli_from_args(cls, args):
+        return cls._cli_construct(
+            args, args.tweetId, mode=TwitterTweetScraperMode._cli_from_args(args))
+
+
 class TwitterListTweetsScraper(_TwitterAPIScraper):
     name = 'twitter-list'
 
     def __init__(self, listId, **kwargs):
         self._listId = listId
+        kwargs['maxEmptyPages'] = 1
         # self._mode = mode
         super().__init__(
             f'https://twitter.com/i/lists/{self._listId}',
             **kwargs)
 
-    def get_items(self, cursor: str = None):
+    def get_items(self, count: int = 40, cursor: str = None):
 
         paginationVariables = {
             "listId": str(self._listId),
-            "count": 60,
-            "cursor": None,
+            "count": count,
+            "cursor": cursor,
         }
-   
+
         variables = paginationVariables.copy()
         del variables['cursor']
-        
+
         features = self._get_features('ListLatestTweetsTimeline', {})
 
         params = {
@@ -2933,7 +3175,7 @@ class TwitterListTweetsScraper(_TwitterAPIScraper):
             'variables': paginationVariables,
             'features': features,
             'fieldToggles': {
-                "withAuxiliaryUserLabels": False, 
+                "withAuxiliaryUserLabels": False,
                 "withArticleRichContentState": False
             }
         }
@@ -2946,7 +3188,6 @@ class TwitterListTweetsScraper(_TwitterAPIScraper):
             'instructions'
         ]
 
-
         for obj in self._iter_api_data(
             url,
             _TwitterAPIType.GRAPHQL,
@@ -2958,7 +3199,11 @@ class TwitterListTweetsScraper(_TwitterAPIScraper):
         ):
             if not obj['data']:
                 return
-            yield from self._graphql_timeline_instructions_to_tweets(obj['data']['list']['tweets_timeline']['timeline']['instructions'], includeConversationThreads=True)
+            
+            
+            yield from self._graphql_timeline_instructions_to_tweets(
+                obj['data']['list']['tweets_timeline']['timeline']['instructions'], includeConversationThreads=True
+            )
 
 
     @classmethod

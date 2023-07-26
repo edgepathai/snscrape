@@ -228,6 +228,7 @@ class Scraper:
         headers: typing.Optional[typing.Dict] = None,
         timeout: int = 10,
         responseOkCallback: typing.Optional[typing.Callable] = None,
+        responseFailCallback: typing.Optional[typing.Callable] = None,
         allowRedirects: bool = True,
         proxies: typing.Optional[typing.Dict] = None
     ):
@@ -255,7 +256,7 @@ class Scraper:
                 None,
                 None
             )
-            _logger.info(f'Retrieving {req.url}')
+            # _logger.info(f'Retrieving {req.url}')
             _logger.debug(f'... with headers: {headers!r}')
             if data:
                 _logger.debug(f'... with data: {data!r}')
@@ -268,8 +269,9 @@ class Scraper:
                     timeout=timeout,
                     **environmentSettings
                 )
-                print(r.text)
+                # print(r.text)
             except requests.exceptions.RequestException as exc:
+                responseFailCallback(r)
                 if attempt < self._retries:
                     retrying = ', retrying'
                     level = logging.INFO
@@ -280,7 +282,7 @@ class Scraper:
                 errors.append(repr(exc))
             else:
                 redirected = f' (redirected to {r.url})' if r.history else ''
-                _logger.info(f'Retrieved {req.url}{redirected}: {r.status_code}')
+                # _logger.info(f'Retrieved {req.url}{redirected}: {r.status_code}')
                 _logger.debug(f'... with response headers: {r.headers!r}')
                 if r.history:
                     for i, redirect in enumerate(r.history):
