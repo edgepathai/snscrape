@@ -61,7 +61,8 @@ __all__ = [
     'TwitterCashtagScraper',
     'TwitterTweetScraperMode',
     'TwitterTweetScraper',
-    'TwitterListPostsScraper',
+    # 'TwitterListPostsScraper',
+    'TwitterListTweetsScraper',
     'TwitterCommunityScraper',
     'TwitterTrendsScraper',
     'TwitterUsersScraper',
@@ -1326,7 +1327,8 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
         paginationParams=None,
         cursor=None,
         direction=_ScrollDirection.BOTTOM,
-        instructionsPath=None
+        instructionsPath=None,
+        maxPages=None
     ):
         # Iterate over endpoint with params/paginationParams, optionally starting from a cursor
         # Handles guest token extraction using the baseUrl passed to __init__ etc.
@@ -1353,8 +1355,12 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
         stopOnEmptyResponse = False
         emptyResponsesOnCursor = 0
         emptyPages = 0
+        iterations = 0
         while True:
             _logger.info(f'Retrieving scroll page {cursor}')
+            iterations += 1
+            if maxPages is not None and iterations > maxPages:
+                break
             self._sessionManager.on_paginate(endpoint, cursor)
             obj = self._get_api_data(
                 endpoint,
@@ -1415,6 +1421,7 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
                 emptyResponsesOnCursor += 1
                 if emptyResponsesOnCursor > self._retries:
                     break
+            print(f'entryCount {entryCount}')
             if entryCount == 0:
                 emptyPages += 1
                 if self._maxEmptyPages and emptyPages >= self._maxEmptyPages:
@@ -2231,6 +2238,7 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
             _logger.info(f"page with {len(instruction['entries'])} items")
             if len(instruction['entries']) <= 2:
                 _logger.info(pformat(instruction))
+                
             for entry in instruction['entries']:
                 if entry['entryId'].startswith('tweet-'):
                     tweetId = int(entry['entryId'].split('-', 1)[1])
@@ -2694,7 +2702,6 @@ class TwitterProfileScraper(TwitterUserScraper):
         kwargs['maxEmptyPages'] = 0
         super().__init__(**kwargs)
 
-
     def get_items(self, count: int = 40, cursor: str | None = None):
         if not self._isUserId:
             if self.entity is None:
@@ -2755,7 +2762,7 @@ class TwitterProfileScraper(TwitterUserScraper):
             params,
             paginationParams,
             instructionsPath=['data', 'user', 'result', 'timeline_v2', 'timeline', 'instructions'],
-            cursor=cursor
+            cursor=cursor,
         ):
             if not obj['data'] or 'result' not in obj['data']['user']:
                 raise snscrape.base.ScraperException('Empty response')
@@ -3049,10 +3056,23 @@ class TwitterTweetScraper(_TwitterAPIScraper):
             args, args.tweetId, mode=TwitterTweetScraperMode._cli_from_args(args))
 
 
+class TwitterHomeScraperMode(enum.Enum):
+    FOR_YOU = 'for_you'
+    FOLLOWING = 'following'
+
+
 class TwitterHomeScraper(_TwitterAPIScraper):
     name = 'twitter-home'
 
-    def __init__(self, **kwargs):
+    def __init__(self, mode: TwitterHomeScraperMode = TwitterHomeScraperMode.FOLLOWING, **kwargs):
+
+        self._mode = mode
+
+        if self._mode == TwitterHomeScraperMode.FOLLOWING:
+            self._method = 'HomeLatestTimeline'
+        elif self._mode == TwitterHomeScraperMode.FOR_YOU:
+            self._method = 'HomeTimeline'
+        
         # self._listId = listId
         kwargs['maxEmptyPages'] = 1
         # self._mode = mode
@@ -3060,20 +3080,21 @@ class TwitterHomeScraper(_TwitterAPIScraper):
             f'https://twitter.com/home',
             **kwargs)
 
-    def get_items(self, count: int = 40, cursor: str = None):
+    def get_items(self, count: int = 40, cursor: str = None, maxPages: typing.Optional[int] = None):
 
         paginationVariables = {
             "count": count,
             "includePromotedContent": True,
             "latestControlAvailable": True,
-            "requestContext":"launch",
-            "withCommunity": True
+            "requestContext": "launch",
+            "withCommunity": True,
+            'cursor': cursor,
         }
 
         variables = paginationVariables.copy()
         del variables['cursor']
 
-        features = self._get_features('HomeTimeline', {})
+        features = self._get_features(self._method, {})
 
         params = {
             'variables': variables,
@@ -3091,12 +3112,11 @@ class TwitterHomeScraper(_TwitterAPIScraper):
                 "withArticleRichContentState": False
             }
         }
-        url = self._get_api_url('HomeTimeline')
+        url = self._get_api_url(self._method)
         instructionsPath = [
             'data',
-            'list',
-            'tweets_timeline',
-            'timeline',
+            'home',
+            'home_timeline_urt',
             'instructions'
         ]
 
@@ -3107,13 +3127,15 @@ class TwitterHomeScraper(_TwitterAPIScraper):
             paginationParams,
             direction=_ScrollDirection.BOTTOM,
             instructionsPath=instructionsPath,
-            cursor=cursor
+            cursor=cursor,
+            maxPages=maxPages
         ):
             if not obj['data']:
                 return
 
             yield from self._graphql_timeline_instructions_to_tweets(
-                obj['data']['list']['tweets_timeline']['timeline']['instructions'], includeConversationThreads=True
+                obj['data']['home']['home_timeline_urt']['instructions'],
+                includeConversationThreads=True
             )
 
 
@@ -3167,7 +3189,7 @@ class TwitterListTweetsScraper(_TwitterAPIScraper):
             'variables': variables,
             'features': features,
             'fieldToggles': {
-                "withAuxiliaryUserLabels": False, 
+                "withAuxiliaryUserLabels": False,
                 "withArticleRichContentState": False
             }
         }

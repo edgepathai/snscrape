@@ -36,12 +36,17 @@ class _DeprecatedProperty:
     def __get__(self, obj, objType):
         if obj is None: # if the access is through the class using _DeprecatedProperty rather than an instance of the class:
             return self
-        warnings.warn(f'{self.name} is deprecated, use {self.replStr} instead', DeprecatedFeatureWarning, stacklevel = 2)
+        warnings.warn(
+            f'{self.name} is deprecated, use {self.replStr} instead',
+            DeprecatedFeatureWarning,
+            stacklevel=2
+        )
         return self.repl(obj)
 
 
 def _json_serialise_datetime_enum(obj):
-    '''A JSON serialiser that converts datetime.datetime and datetime.date objects to ISO-8601 strings and enum.Enum objects to their values.'''
+    '''A JSON serialiser that converts datetime.datetime and datetime.date 
+    objects to ISO-8601 strings and enum.Enum objects to their values.'''
 
     if isinstance(obj, (datetime.datetime, datetime.date)):
         return obj.isoformat()
@@ -58,18 +63,32 @@ def _json_dataclass_to_dict(obj, forBuggyIntParser: bool = False):
             assert field.name != '_type'
             if field.name.startswith('_'):
                 continue
-            out[field.name] = _json_dataclass_to_dict(getattr(obj, field.name), forBuggyIntParser=forBuggyIntParser)
+            out[field.name] = _json_dataclass_to_dict(
+                getattr(obj, field.name),
+                forBuggyIntParser=forBuggyIntParser
+            )
         # Add properties
         for k in dir(obj):
-            if isinstance(getattr(type(obj), k, None), (property, _DeprecatedProperty)):
+            if isinstance(
+                getattr(type(obj), k, None), (property, _DeprecatedProperty)
+            ):
                 assert k != '_type'
                 if k.startswith('_'):
                     continue
-                out[k] = _json_dataclass_to_dict(getattr(obj, k), forBuggyIntParser=forBuggyIntParser)
+                out[k] = _json_dataclass_to_dict(
+                    getattr(obj, k),
+                    forBuggyIntParser=forBuggyIntParser
+                )
     elif isinstance(obj, (tuple, list)):
-        return type(obj)(_json_dataclass_to_dict(x, forBuggyIntParser=forBuggyIntParser) for x in obj)
+        return type(obj)(_json_dataclass_to_dict(
+            x, forBuggyIntParser=forBuggyIntParser) for x in obj)
     elif isinstance(obj, dict):
-        out = {_json_dataclass_to_dict(k, forBuggyIntParser=forBuggyIntParser): _json_dataclass_to_dict(v, forBuggyIntParser=forBuggyIntParser) for k, v in obj.items()}
+        out = {
+            _json_dataclass_to_dict(
+                k, forBuggyIntParser=forBuggyIntParser
+            ): _json_dataclass_to_dict(
+                v, forBuggyIntParser=forBuggyIntParser) for k, v in obj.items()
+        }
     elif isinstance(obj, set):
         return {_json_dataclass_to_dict(v, forBuggyIntParser=forBuggyIntParser) for v in obj}
     else:
@@ -90,7 +109,7 @@ def _json_dataclass_to_dict(obj, forBuggyIntParser: bool = False):
 class _JSONDataclass:
     '''A base class for dataclasses for conversion to JSON'''
 
-    def json(self, forBuggyIntParser = False):
+    def json(self, forBuggyIntParser=False):
         '''
         Convert the object to a JSON string
 
@@ -99,11 +118,11 @@ class _JSONDataclass:
         '''
 
         with warnings.catch_warnings():
-            warnings.filterwarnings(action = 'ignore', category = DeprecatedFeatureWarning)
+            warnings.filterwarnings(action='ignore', category=DeprecatedFeatureWarning)
             out = _json_dataclass_to_dict(self, forBuggyIntParser=forBuggyIntParser)
         assert '_snscrape' not in out, 'Metadata collision on _snscrape'
         out['_snscrape'] = snscrape.version.__version__
-        return json.dumps(out, default = _json_serialise_datetime_enum)
+        return json.dumps(out, default=_json_serialise_datetime_enum)
 
 
 @dataclasses.dataclass
@@ -338,4 +357,6 @@ class Scraper:
         return cls(*args, **kwargs, retries=argparseArgs.retries)
 
 
-__getattr__, __dir__ = snscrape.utils.module_deprecation_helper(__all__, Entity=Item)
+__getattr__, __dir__ = snscrape.utils.module_deprecation_helper(
+    __all__, Entity=Item
+)
