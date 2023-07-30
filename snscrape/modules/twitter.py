@@ -1423,6 +1423,7 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
                     break
             print(f'entryCount {entryCount}')
             if entryCount == 0:
+                break
                 emptyPages += 1
                 if self._maxEmptyPages and emptyPages >= self._maxEmptyPages:
                     _logger.warning(f'Stopping after {emptyPages} empty pages')
