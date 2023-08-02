@@ -62,6 +62,7 @@ __all__ = [
     'TwitterTweetScraperMode',
     'TwitterTweetScraper',
     # 'TwitterListPostsScraper',
+    # 'TwitterListsScraper',
     'TwitterListTweetsScraper',
     'TwitterCommunityScraper',
     'TwitterTrendsScraper',
@@ -658,6 +659,7 @@ class List:
     user: typing.Union[User, UserRef]
 
 
+
 class ProfileImageShape(enum.Enum):
     CIRCLE = 'circle'
     HEXAGON = 'hexagon'
@@ -908,7 +910,7 @@ class TwitterSessionManager:
 
     def get_context(self, ix: int):
         return self._contexts[ix]
-
+    
     def get_context_info(self, ix: int):
         return self._context_info[ix]
 
@@ -1139,7 +1141,6 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
         self._methodKeyMap = methodKeyMap
         self._methodFeatures = methodFeatures
         self._sessionManager = sessionManager
-        self._cursor = None
         # self.update_credentials(
         #     authorizationHeader,
         #     cookies,
@@ -1356,8 +1357,6 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
         # and reset to None; it isn't set anymore after because the first entry
         # condition will always be true for the bottom cursor.
 
-        self._cursor = cursor
-
         assert apiType is _TwitterAPIType.GRAPHQL
         if cursor is None:
             reqParams = params
@@ -1460,7 +1459,6 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
             if newCursor != cursor:
                 emptyResponsesOnCursor = 0
             cursor = newCursor
-            self._cursor = cursor
             reqParams = copy.deepcopy(paginationParams)
             reqParams['variables']['cursor'] = cursor
 
@@ -2469,7 +2467,6 @@ class TwitterSearchScraperMode(enum.Enum):
 
 class TwitterSearchScraper(_TwitterAPIScraper):
     name = 'twitter-search'
-    _method = 'SearchTimeline'
 
     def __init__(
         self,
@@ -2557,7 +2554,7 @@ class TwitterSearchScraper(_TwitterAPIScraper):
             'responsive_web_twitter_blue_verified_badge_is_enabled': True,
         }
 
-        features = self._get_features(self._method, features)
+        features = self._get_features('SearchTimeline', features)
 
         params = {'variables': variables, 'features': features}
 
@@ -2566,7 +2563,7 @@ class TwitterSearchScraper(_TwitterAPIScraper):
             'features': features}
 
         for obj in self._iter_api_data(
-            self._get_api_url(self._method),
+            self._get_api_url('SearchTimeline'),
             _TwitterAPIType.GRAPHQL,
             params,
             paginationParams,
@@ -2617,7 +2614,6 @@ class TwitterSearchScraper(_TwitterAPIScraper):
 
 class TwitterUserScraper(TwitterSearchScraper):
     name = 'twitter-user'
-    _method = 'UserByScreenName'
 
     def __init__(
         self,
@@ -2631,7 +2627,7 @@ class TwitterUserScraper(TwitterSearchScraper):
         self._isUserId = isinstance(user, int)
         if not self._isUserId and not self.is_valid_username(user):
             raise ValueError('Invalid username')
-
+            
         super().__init__(f'from:{user}', **kwargs)
         self._user = user
         self._baseUrl = f'https://twitter.com/{self._user}' \
@@ -2641,7 +2637,7 @@ class TwitterUserScraper(TwitterSearchScraper):
         self._ensure_guest_token()
         if not self._isUserId:
             fieldName = 'screen_name'
-            endpoint = self._get_api_url(self._method)
+            endpoint = self._get_api_url('UserByScreenName')
         else:
             fieldName = 'userId'
             endpoint = self._get_api_url('UserByRestId')
@@ -2658,7 +2654,7 @@ class TwitterUserScraper(TwitterSearchScraper):
             'responsive_web_graphql_skip_user_profile_image_extensions_enabled': False,
             'responsive_web_graphql_timeline_navigation_enabled': True,
         }
-        features = self._get_features(self._method, features)
+        features = self._get_features('UserByScreenName', features)
 
         obj = self._get_api_data(
             endpoint,
@@ -2718,7 +2714,6 @@ class TwitterUserScraper(TwitterSearchScraper):
 
 class TwitterProfileScraper(TwitterUserScraper):
     name = 'twitter-profile'
-    _method = 'UserTweetsAndReplies'
 
     def __init__(self, **kwargs):
         kwargs['maxEmptyPages'] = 0
@@ -2774,12 +2769,12 @@ class TwitterProfileScraper(TwitterUserScraper):
             'features': features
         }
 
-        features = self._get_features(self._method, features)
+        features = self._get_features('UserTweetsAndReplies', features)
 
         gotPinned = False
         previousPagesTweetIds = set()
         for obj in self._iter_api_data(
-            self._get_api_url(self._method),
+            self._get_api_url('UserTweetsAndReplies'),
             _TwitterAPIType.GRAPHQL,
             params,
             paginationParams,
@@ -2873,7 +2868,6 @@ class TwitterTweetScraperMode(enum.Enum):
 
 class TwitterTweetScraper(_TwitterAPIScraper):
     name = 'twitter-tweet'
-    _method = 'TweetDetail'
 
     def __init__(self, tweetId, *,
                  mode=TwitterTweetScraperMode.SINGLE, **kwargs):
@@ -2923,13 +2917,13 @@ class TwitterTweetScraper(_TwitterAPIScraper):
             'responsive_web_enhance_cards_enabled': False,
         }
 
-        features = self._get_features(self._method, features)
+        features = self._get_features('TweetDetail', features)
 
         params = {'variables': variables, 'features': features}
         paginationParams = {
             'variables': paginationVariables,
             'features': features}
-        url = self._get_api_url(self._method)
+        url = self._get_api_url('TweetDetail')
         instructionsPath = [
             'data',
             'threaded_conversation_with_injections_v2',
@@ -3086,7 +3080,6 @@ class TwitterHomeScraperMode(enum.Enum):
 
 class TwitterHomeScraper(_TwitterAPIScraper):
     name = 'twitter-home'
-    _method = 'HomeTimeline'
 
     def __init__(self, mode: TwitterHomeScraperMode = TwitterHomeScraperMode.FOLLOWING, **kwargs):
 
@@ -3111,12 +3104,8 @@ class TwitterHomeScraper(_TwitterAPIScraper):
             "includePromotedContent": True,
             "latestControlAvailable": True,
             "requestContext": "launch",
-<<<<<<< Updated upstream
             "withCommunity": True,
             'cursor': cursor,
-=======
-            "withCommunity": True
->>>>>>> Stashed changes
         }
 
         variables = paginationVariables.copy()
@@ -3228,11 +3217,18 @@ class TwitterListScraper(_TwitterAPIScraper):
             params=params
         )
 
+        _logger.info(data)
+
         list_obj = data['data']['list']
 
-        user = self._graphql_user_results_to_user(list_obj['user_results'])
+        
 
-        _logger.info(list_obj)
+        if list_obj.get('user_results'):
+            user = self._graphql_user_results_to_user(list_obj['user_results'])
+        else:
+            user = None
+
+        # _logger.info(list_obj)
 
         return List(
             id=list_obj['id_str'],
@@ -3247,20 +3243,13 @@ class TwitterListScraper(_TwitterAPIScraper):
             user=user
         )
 
-        # r = self._get(
-        #     self._get_api_url('ListByRestId'),
-        #     params=params
-        # )
 
-        # return r.json()
 
-    # withAuxiliaryUserLabels: false
 
 
 
 class TwitterListTweetsScraper(_TwitterAPIScraper):
     name = 'twitter-list'
-    _method = 'ListLatestTweetsTimeline'
 
     def __init__(self, listId, **kwargs):
         self._listId = listId
@@ -3281,7 +3270,7 @@ class TwitterListTweetsScraper(_TwitterAPIScraper):
         variables = paginationVariables.copy()
         del variables['cursor']
 
-        features = self._get_features(self._method, {})
+        features = self._get_features('ListLatestTweetsTimeline', {})
 
         params = {
             'variables': variables,
@@ -3299,7 +3288,7 @@ class TwitterListTweetsScraper(_TwitterAPIScraper):
                 "withArticleRichContentState": False
             }
         }
-        url = self._get_api_url(self._method)
+        url = self._get_api_url('ListLatestTweetsTimeline')
         instructionsPath = [
             'data',
             'list',
@@ -3319,10 +3308,10 @@ class TwitterListTweetsScraper(_TwitterAPIScraper):
         ):
             if not obj['data']:
                 return
-
+            
+            
             yield from self._graphql_timeline_instructions_to_tweets(
-                obj['data']['list']['tweets_timeline']['timeline']['instructions'],
-                includeConversationThreads=True
+                obj['data']['list']['tweets_timeline']['timeline']['instructions'], includeConversationThreads=True
             )
 
 
@@ -3346,6 +3335,8 @@ class TwitterListTweetsScraper(_TwitterAPIScraper):
     def _cli_from_args(cls, args):
         return cls._cli_construct(
             args, args.tweetId, mode=TwitterTweetScraperMode._cli_from_args(args))
+
+
 
 
 class TwitterListPostsScraper(TwitterSearchScraper):
