@@ -67,6 +67,8 @@ __all__ = [
     'TwitterCommunityScraper',
     'TwitterTrendsScraper',
     'TwitterUsersScraper',
+    'TwitterArticleTimelineScraper',
+    'TwitterArticleTimelineScraperMode',
 ]
 
 
@@ -732,6 +734,31 @@ class GuestTokenManager:
         self._setTime = 0.0
 
 
+@dataclasses.dataclass
+class TimelineGeneralContext(snscrape.base.Item):
+    contextType: str
+    text: str
+    contextImageUrls: typing.List[str]
+    landingUrl: dict
+
+
+@dataclasses.dataclass
+class TimelineArticle(snscrape.base.Item):
+    id: int
+    url: str
+    title: str
+    description: str
+    publish_date: datetime.datetime
+    domain: str
+    domain_url: str
+    image_url: str
+    socialContext: TimelineGeneralContext
+    articlePosition: int
+    shareCount: int
+    tweets: typing.List['Tweet']
+
+
+
 class _CLIGuestTokenManager(GuestTokenManager):
     def __init__(self):
         super().__init__()
@@ -910,7 +937,7 @@ class TwitterSessionManager:
 
     def get_context(self, ix: int):
         return self._contexts[ix]
-    
+
     def get_context_info(self, ix: int):
         return self._context_info[ix]
 
@@ -3244,7 +3271,169 @@ class TwitterListScraper(_TwitterAPIScraper):
         )
 
 
+class TwitterArticleTimelineScraperMode(enum.Enum):
+    PEOPLE_YOU_FOLLOW = 'people_you_follow'
+    PEOPLE_THEY_FOLLOW = 'people_they_follow'
 
+
+class TwitterArticleTimelineScraper(_TwitterAPIScraper):
+    name = 'twitter-article'
+
+    def __init__(self, mode: TwitterArticleTimelineScraperMode, window: int, **kwargs):
+        # self._listId = listId
+        if window not in (1, 2, 4, 8, 24):
+            raise ValueError('Window must be 1, 2, 4, 8, or 24')
+
+        self._window = window
+
+        self._mode = mode
+
+        if mode == TwitterArticleTimelineScraperMode.PEOPLE_YOU_FOLLOW:
+            method_slug = 'follows'
+        else:
+            method_slug = 'people_they_follow'
+
+        kwargs['maxEmptyPages'] = 1
+        # self._mode = mode
+        super().__init__(
+            f'https://twitter.com/i/articles/{method_slug}/?time_window={window}',
+            **kwargs)
+
+    def get_items(self, count: int = 20, cursor: str = None, fetch_tweets: bool = True):
+
+        if self._mode == TwitterArticleTimelineScraperMode.PEOPLE_YOU_FOLLOW:
+            seed_type = 'FollowingList'
+        else:
+            seed_type = 'FriendsOfFriends'
+
+        variables = {
+            "count": count,
+            "articleListSeedType": seed_type, #FriendsOfFriends
+            "timeWindowMillis": self._window * 60 * 60 * 1000
+        }
+
+        features = self._get_features('ArticleTimeline', {})
+
+        params = {
+            'variables': variables,
+            'features': features,
+            # 'fieldToggles': {
+            #     "withAuxiliaryUserLabels": False,
+            #     "withArticleRichContentState": False
+            # }
+        }
+        paginationParams = {
+            'variables': variables,
+            'features': features,
+            # 'fieldToggles': {
+            #     "withAuxiliaryUserLabels": False,
+            #     "withArticleRichContentState": False
+            # }
+        }
+
+        api_url = self._get_api_url('ArticleTimeline')
+        instructionsPath = [
+            'data',
+            'article_timeline',
+            'timeline',
+            'instructions'
+        ]
+
+        for obj in self._iter_api_data(
+            api_url,
+            _TwitterAPIType.GRAPHQL,
+            params,
+            paginationParams,
+            direction=_ScrollDirection.BOTTOM,
+            instructionsPath=instructionsPath,
+            cursor=cursor
+        ):
+            if not obj['data']:
+                return
+
+            instructions = obj['data']['article_timeline']['timeline']['instructions']
+
+            for instruction in instructions:
+                if instruction['type'] != 'TimelineAddEntries':
+                    continue
+                for entry in instruction['entries']:
+                    if entry.get('content', {}).get('itemContent', {}).get('itemType', '') != 'TimelineArticle':
+                        continue
+                    article = entry.get('content', {}).get('itemContent', {}).get('article')
+
+                    id = article.get('rest_id')
+                    url = article.get('metadata', {}).get('article_url')
+                    title = article.get('metadata', {}).get('title')
+                    description = article.get('metadata', {}).get('description')
+                    # format: Thu Aug 10 19:09:54 +0000 2023
+                    publish_date = datetime.datetime.strptime(article.get('metadata', {}).get('publish_date'), '%a %b %d %H:%M:%S %z %Y') \
+                        if article.get('metadata', {}).get('publish_date') else None
+                    domain = article.get('metadata', {}).get('domain')
+                    domain_url = article.get('metadata', {}).get('domain_url')
+                    image_url = article.get('metadata', {}).get('image_url')
+
+                    socialContext = TimelineGeneralContext(**{
+                        'contextType': article.get('content', {}).get(
+                            'clientEventInfo', {}).get('details', {}).get('social_context', {}).get('contextType'),
+                        'text': article.get('content', {}).get(
+                            'clientEventInfo', {}).get('details', {}).get('social_context', {}).get('text'),
+                        'contextImageUrls': article.get('content', {}).get(
+                            'clientEventInfo', {}).get('details', {}).get('social_context', {}).get('contextImageUrls'),
+                        'landingUrl': article.get('content', {}).get(
+                            'clientEventInfo', {}).get('details', {}).get('social_context', {}).get('landingUrl'),
+                    })
+
+                    articlePosition = article.get('content', {}).get(
+                        'clientEventInfo', {}).get('details', {}).get('article_details', {}).get('article_position')
+                    shareCount = article.get('content', {}).get(
+                        'clientEventInfo', {}).get('details', {}).get('article_details', {}).get('share_count')
+
+                    tweets = []
+
+                    if fetch_tweets:
+                        for _obj in self._iter_api_data(
+                            self._get_api_url('ArticleTweetsTimeline'),
+                            _TwitterAPIType.GRAPHQL,
+                            {
+                                'variables': {
+                                    "articleId": id,
+                                    "count": count,
+                                    "articleListSeedType": seed_type, #FriendsOfFriends
+                                },
+                                'features': self._get_features('ArticleTweetsTimeline', {}),
+                            },
+                            None,
+                            direction=_ScrollDirection.BOTTOM,
+                            instructionsPath=[
+                                'data',
+                                'article_by_rest_id',
+                                'tweets_timeline',
+                                'timeline',
+                                'instructions'
+                            ],
+                            cursor=cursor
+                        ):
+                            # _obj['data']['article_by_rest_id']['tweets_timeline']['timeline']['instructions']
+                            for tweet in self._graphql_timeline_instructions_to_tweets(
+                                _obj['data']['article_by_rest_id']['tweets_timeline']['timeline']['instructions'],
+                                includeConversationThreads=True
+                            ):
+                                tweets.append(tweet)
+
+                    yield TimelineArticle(
+                        id=id,
+                        url=url,
+                        title=title,
+                        description=description,
+                        publish_date=publish_date,
+                        domain=domain,
+                        domain_url=domain_url,
+                        image_url=image_url,
+                        socialContext=socialContext,
+                        articlePosition=articlePosition,
+                        shareCount=shareCount,
+                        tweets=tweets
+                    )
 
 
 
@@ -3308,7 +3497,6 @@ class TwitterListTweetsScraper(_TwitterAPIScraper):
         ):
             if not obj['data']:
                 return
-            
             
             yield from self._graphql_timeline_instructions_to_tweets(
                 obj['data']['list']['tweets_timeline']['timeline']['instructions'], includeConversationThreads=True
