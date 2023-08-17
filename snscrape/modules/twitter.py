@@ -756,6 +756,7 @@ class TimelineArticle(snscrape.base.Item):
     articlePosition: int
     shareCount: int
     tweets: typing.List['Tweet']
+    short_url: typing.Optional[str] = None
 
 
 
@@ -3359,6 +3360,7 @@ class TwitterArticleTimelineScraper(_TwitterAPIScraper):
                 for entry in instruction['entries']:
                     if entry.get('content', {}).get('itemContent', {}).get('itemType', '') != 'TimelineArticle':
                         continue
+                    # print(entry.get('content', {}).get('itemContent', {}))
                     article = entry.get('content', {}).get('itemContent', {}).get('article')
 
                     id = article.get('rest_id')
@@ -3373,21 +3375,21 @@ class TwitterArticleTimelineScraper(_TwitterAPIScraper):
                     image_url = article.get('metadata', {}).get('image_url')
 
                     socialContext = TimelineGeneralContext(**{
-                        'contextType': article.get('content', {}).get(
-                            'clientEventInfo', {}).get('details', {}).get('social_context', {}).get('contextType'),
-                        'text': article.get('content', {}).get(
-                            'clientEventInfo', {}).get('details', {}).get('social_context', {}).get('text'),
-                        'contextImageUrls': article.get('content', {}).get(
-                            'clientEventInfo', {}).get('details', {}).get('social_context', {}).get('contextImageUrls'),
-                        'landingUrl': article.get('content', {}).get(
-                            'clientEventInfo', {}).get('details', {}).get('social_context', {}).get('landingUrl'),
+                        'contextType': entry.get('content', {}).get(
+                            'clientEventInfo', {}).get('details', {}).get('contextType'),
+                        'text': entry.get('content', {}).get(
+                            'clientEventInfo', {}).get('details', {}).get('text'),
+                        'contextImageUrls': entry.get('content', {}).get(
+                            'clientEventInfo', {}).get('details', {}).get('contextImageUrls'),
+                        'landingUrl': entry.get('content', {}).get(
+                            'clientEventInfo', {}).get('details', {}).get('landingUrl'),
                     })
 
-                    articlePosition = article.get('content', {}).get(
+                    articlePosition = entry.get('content', {}).get(
                         'clientEventInfo', {}).get('details', {}).get('article_details', {}).get('article_position')
-                    shareCount = article.get('content', {}).get(
+                    shareCount = entry.get('content', {}).get(
                         'clientEventInfo', {}).get('details', {}).get('article_details', {}).get('share_count')
-
+                    
                     tweets = []
 
                     if fetch_tweets:
