@@ -69,6 +69,7 @@ __all__ = [
     'TwitterUsersScraper',
     'TwitterArticleTimelineScraper',
     'TwitterArticleTimelineScraperMode',
+    'TimelineArticle'
 ]
 
 
@@ -1050,6 +1051,8 @@ class TwitterSessionManager:
                         f'Waiting... {resets_in_seconds} seconds remaining')
 
                     time.sleep(min(10, resets_in_seconds + 1))
+            else:
+                raise snscrape.base.ScraperException('Rate limit reached')
 
 
             # context =
@@ -2503,7 +2506,7 @@ class TwitterSearchScraper(_TwitterAPIScraper):
         cursor=None,
         mode=TwitterSearchScraperMode.LIVE,
         top=None,
-        maxEmptyPages=20,
+        maxEmptyPages=1,
         **kwargs
     ):
         if not query.strip():
@@ -2538,7 +2541,7 @@ class TwitterSearchScraper(_TwitterAPIScraper):
             mode = TwitterSearchScraperMode.TOP if top else TwitterSearchScraperMode.LIVE
         self._mode = mode
 
-    def get_items(self):
+    def get_items(self, count: int = 20, maxPages: int = None):
         if not self._query.strip():
             raise ValueError('empty query')
         if self._mode is TwitterSearchScraperMode.USER:
@@ -2547,7 +2550,7 @@ class TwitterSearchScraper(_TwitterAPIScraper):
 
         paginationVariables = {
             'rawQuery': self._query,
-            'count': 20,
+            'count': count,
             'cursor': None,
             'product': 'Latest' if self._mode is TwitterSearchScraperMode.LIVE else 'Top',
             'withDownvotePerspective': False,
@@ -2596,7 +2599,8 @@ class TwitterSearchScraper(_TwitterAPIScraper):
             params,
             paginationParams,
             cursor=self._cursor,
-            instructionsPath=['data', 'search_by_raw_query', 'search_timeline', 'timeline', 'instructions']
+            instructionsPath=['data', 'search_by_raw_query', 'search_timeline', 'timeline', 'instructions'],
+            maxPages=maxPages
         ):
             yield from self._graphql_timeline_instructions_to_tweets(obj['data']['search_by_raw_query']['search_timeline']['timeline']['instructions'])
 
