@@ -1468,7 +1468,6 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
                 emptyResponsesOnCursor += 1
                 if emptyResponsesOnCursor > self._retries:
                     break
-            print(f'entryCount {entryCount}')
             if entryCount == 0:
                 break
                 emptyPages += 1
