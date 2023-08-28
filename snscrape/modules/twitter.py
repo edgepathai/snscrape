@@ -905,6 +905,12 @@ class TwitterAuthContext(typing.NamedTuple):
     csrfToken: typing.Optional[str] = None
 
 
+class RateLimitExceeded(snscrape.base.ScraperException):
+    def __init__(self, reset_at: datetime.datetime):
+        self.reset_at = reset_at
+        reset_at = datetime.datetime.fromtimestamp(reset_at)
+        super().__init__(f'<RateLimitExceeded, resets at {reset_at: %Y-%m-%d %H:%M:%S} />')
+
 
 class TwitterSessionManager:
 
@@ -985,7 +991,7 @@ class TwitterSessionManager:
 
         current_context_idx = self._current_context[path]
 
-        _logger.info(f'current context idx {current_context_idx}')
+        # _logger.info(f'current context idx {current_context_idx}')
 
         context_info = self.get_context_info(current_context_idx)
 
@@ -1017,13 +1023,13 @@ class TwitterSessionManager:
             # get index of context with lowest reset time
             min_reset_at_idx = min(idx_reset_at, key=idx_reset_at.get)
 
-            _logger.info(f'min_reset_at_idx {min_reset_at_idx}')
+            # _logger.info(f'min_reset_at_idx {min_reset_at_idx}')
 
             self._current_context[path] = min_reset_at_idx
 
             min_reset_at = min(idx_reset_at.values())
 
-            _logger.info(f'min_reset_at {min_reset_at}')
+            # _logger.info(f'min_reset_at {min_reset_at}')
 
             if min_reset_at == -1:
                 return
@@ -1033,10 +1039,11 @@ class TwitterSessionManager:
 
             _logger.info(f'resets_in_seconds {resets_in_seconds}')
 
-            _logger.info((
-                f'Rate limit reached. Must sleep for '
-                f' {resets_in_seconds} seconds'
-            ))
+            # _logger.info((
+            #     f'Rate limit reached. Must sleep for '
+            #     f'\n{self._sleepOnExhaustedRateLimit}\n'
+            #     f' {resets_in_seconds} seconds'
+            # ))
 
             if self._sleepOnExhaustedRateLimit:
                 while (
@@ -1052,7 +1059,8 @@ class TwitterSessionManager:
 
                     time.sleep(min(10, resets_in_seconds + 1))
             else:
-                raise snscrape.base.ScraperException('Rate limit reached')
+                _logger.info(f'min_reset_at {min_reset_at}')
+                raise RateLimitExceeded(reset_at=min_reset_at)
 
 
             # context =
@@ -1350,20 +1358,23 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
                 {k: json.dumps(v, separators=(',', ':')) for k, v in params.items()},
                 quote_via=urllib.parse.quote
             )
-
-        r = self._get(
-            endpoint,
-            params=params,
-            headers=self._get_api_headers(endpoint),
-            responseOkCallback=functools.partial(
-                self._check_api_response,
-                apiType=apiType,
-                instructionsPath=instructionsPath),
-            responseFailCallback=functools.partial(
-                self._check_api_response,
-                apiType=apiType,
-                instructionsPath=instructionsPath)
-        )
+        try:
+            r = self._get(
+                endpoint,
+                params=params,
+                headers=self._get_api_headers(endpoint),
+                responseOkCallback=functools.partial(
+                    self._check_api_response,
+                    apiType=apiType,
+                    instructionsPath=instructionsPath),
+                responseFailCallback=functools.partial(
+                    self._check_api_response,
+                    apiType=apiType,
+                    instructionsPath=instructionsPath)
+            )
+        except snscrape.base.ScraperException as e:
+            self._sessionManager.on_before_request(endpoint)
+            raise e
         return r._snscrapeObj
 
     def _iter_api_data(
@@ -1489,6 +1500,7 @@ class _TwitterAPIScraper(snscrape.base.Scraper):
             if newCursor != cursor:
                 emptyResponsesOnCursor = 0
             cursor = newCursor
+
             reqParams = copy.deepcopy(paginationParams)
             reqParams['variables']['cursor'] = cursor
 
@@ -3800,39 +3812,55 @@ class TwitterFollowingScraper(_TwitterAPIScraper):
         if not self._isUserId and not TwitterUserScraper.is_valid_username(user):
             raise ValueError('Invalid username')
 
-        self._user = user
-        baseUrl = f'https://twitter.com/{self._user}/following' \
-            if not self._isUserId else f'https://twitter.com/i/user/{self._user}/following'
-
-
-        # if not query.strip():
-        #     raise ValueError('empty query')
-        # if mode not in tuple(TwitterSearchScraperMode):
-        #     raise ValueError(
-        #         'invalid mode, must be a TwitterSearchScraperMode')
+        
         kwargs['maxEmptyPages'] = maxEmptyPages
-        super().__init__(**kwargs, baseUrl=baseUrl)
-        # self._query = query  # Note: may get replaced by subclasses when using user ID resolution
-        # if cursor is not None:
-        #     warnings.warn(
-        #         'the `cursor` argument is deprecated',
-        #         snscrape.base.DeprecatedFeatureWarning,
-        #         stacklevel=2)
-        # self._cursor = cursor
-        # if top is not None:
-        #     replacement = f'{__name__}.TwitterSearchScraperMode.' + \
-        #         ('TOP' if top else 'LIVE')
-        #     warnings.warn(
-        #         f'`top` argument is deprecated, use `mode = {replacement}` instead of `top = {bool(top)}`',
-        #         snscrape.base.DeprecatedFeatureWarning,
-        #         stacklevel=2)
-        #     mode = TwitterSearchScraperMode.TOP if top else TwitterSearchScraperMode.LIVE
-        # self._mode = mode
 
-    # @staticmethod
-    # def is_valid_username(s):
-    #     return 1 <= len(s) <= 20 and s.strip(
-    #         string.ascii_letters + string.digits + '_') == ''
+        baseUrl = f'https://twitter.com/{user}/following' \
+            if not self._isUserId else f'https://twitter.com/i/user/{user}/following'
+        super().__init__(**kwargs, baseUrl=baseUrl)
+        self._user = user
+
+        self.entity = self._get_entity()
+
+
+    def _get_entity(self):
+        self._ensure_guest_token()
+        if not self._isUserId:
+            fieldName = 'screen_name'
+            endpoint = self._get_api_url('UserByScreenName')
+        else:
+            fieldName = 'userId'
+            endpoint = self._get_api_url('UserByRestId')
+        variables = {
+            fieldName: str(self._user),
+            'withSafetyModeUserFields': True
+        }
+        features = {
+            'blue_business_profile_image_shape_enabled': True,
+            'responsive_web_graphql_exclude_directive_enabled': True,
+            'verified_phone_label_enabled': False,
+            'highlights_tweets_tab_ui_enabled': False,
+            'creator_subscriptions_tweet_preview_api_enabled': False,
+            'responsive_web_graphql_skip_user_profile_image_extensions_enabled': False,
+            'responsive_web_graphql_timeline_navigation_enabled': True,
+        }
+        features = self._get_features('UserByScreenName', features)
+
+        obj = self._get_api_data(
+            endpoint,
+            _TwitterAPIType.GRAPHQL,
+            params={
+                'variables': variables,
+                'features': features
+            },
+            instructionsPath=[
+                'data',
+                'user'])
+        if not obj['data'] or 'result' not in obj['data']['user']:
+            raise snscrape.base.ScraperException('Empty response')
+        if obj['data']['user']['result']['__typename'] == 'UserUnavailable':
+            raise snscrape.base.EntityUnavailable('User unavailable')
+        return self._graphql_user_results_to_user(obj['data']['user'])
 
     def get_items(self):
         if not self._isUserId:
@@ -3881,7 +3909,7 @@ class TwitterFollowingScraper(_TwitterAPIScraper):
             'features': features
         }
 
-        features = self._get_features('UserTweetsAndReplies', features)
+        features = self._get_features('Following', features)
 
         # gotPinned = False
         previousPagesUserIds = set()
@@ -3899,40 +3927,168 @@ class TwitterFollowingScraper(_TwitterAPIScraper):
             instructions = obj['data']['user']['result']['timeline']['timeline']['instructions']
 
             for instruction in instructions:
-                u = instruction['content']['itemContent']['user_results']
-                if not u:
-                    _logger.warning(
-                        f'Skipping empty response object at position {i}')
-                    continue
-                user = self._graphql_user_results_to_user(u)
-                if user.id in previousPagesUserIds:
-                    continue
-                previousPagesUserIds.add(user.id)
-                yield user
+                # i = 0
+                for i, entry in enumerate(instruction.get('entries', [])):
+                    u = entry.get('content', {}).get('itemContent', {}).get('user_results')
+                    if not u:
+                        # _logger.warning(
+                        #     f'Skipping empty response object at position {i}')
+                        continue
+                    # print(u)
+                    user = self._graphql_user_results_to_user(u)
+                    # print((u, user))
+                    if not user or (user.id in previousPagesUserIds):
+                        continue
+                    previousPagesUserIds.add(user.id)
+                    yield user
 
-            # if not gotPinned:
-            #     for instruction in instructions:
-            #         if instruction['type'] == 'TimelinePinEntry':
-            #             gotPinned = True
-            #             tweetId = int(instruction['entry']['entryId'][6:]) if instruction['entry']['entryId'].startswith(
-            #                 'tweet-') else None
-            #             yield self._graphql_timeline_tweet_item_result_to_tweet(instruction['entry']['content']['itemContent']['tweet_results']['result'], tweetId=tweetId, pinned=True)
-            # users = list(
-            #     self._graphql_timeline_instructions_to_tweets(
-            #         instructions, pinned=False))
-            # pageTweetIds = frozenset(tweet.id for tweet in tweets)
-            # if len(pageTweetIds) > 0 and pageTweetIds in previousPagesTweetIds:
-            #     _logger.warning(
-            #         "Found duplicate page of tweets, stopping as assumed cycle found in Twitter's pagination")
-            #     break
-            # previousPagesTweetIds.add(pageTweetIds)
-            # Includes tweets by other users on conversations, don't return
-            # those
-            # for user in users:
-            #     if getattr(getattr(user, 'user', None),
-            #                'id', userId) != userId:
-            #         continue
-            #     yield tweet
+
+class TwitterFollowersScraper(_TwitterAPIScraper):
+    name = 'twitter-followers'
+
+    def __init__(
+        self,
+        user: str,
+        cursor=None,
+        maxEmptyPages=20,
+        **kwargs
+    ):
+        self._isUserId = isinstance(user, int)
+
+        if not self._isUserId and not TwitterUserScraper.is_valid_username(user):
+            raise ValueError('Invalid username')
+
+        
+        kwargs['maxEmptyPages'] = maxEmptyPages
+
+        baseUrl = f'https://twitter.com/{user}/followers' \
+            if not self._isUserId else f'https://twitter.com/i/user/{user}/followers'
+        super().__init__(**kwargs, baseUrl=baseUrl)
+        self._user = user
+
+        self.entity = self._get_entity()
+
+
+    def _get_entity(self):
+        self._ensure_guest_token()
+        if not self._isUserId:
+            fieldName = 'screen_name'
+            endpoint = self._get_api_url('UserByScreenName')
+        else:
+            fieldName = 'userId'
+            endpoint = self._get_api_url('UserByRestId')
+        variables = {
+            fieldName: str(self._user),
+            'withSafetyModeUserFields': True
+        }
+        features = {
+            'blue_business_profile_image_shape_enabled': True,
+            'responsive_web_graphql_exclude_directive_enabled': True,
+            'verified_phone_label_enabled': False,
+            'highlights_tweets_tab_ui_enabled': False,
+            'creator_subscriptions_tweet_preview_api_enabled': False,
+            'responsive_web_graphql_skip_user_profile_image_extensions_enabled': False,
+            'responsive_web_graphql_timeline_navigation_enabled': True,
+        }
+        features = self._get_features('UserByScreenName', features)
+
+        obj = self._get_api_data(
+            endpoint,
+            _TwitterAPIType.GRAPHQL,
+            params={
+                'variables': variables,
+                'features': features
+            },
+            instructionsPath=[
+                'data',
+                'user'])
+        if not obj['data'] or 'result' not in obj['data']['user']:
+            raise snscrape.base.ScraperException('Empty response')
+        if obj['data']['user']['result']['__typename'] == 'UserUnavailable':
+            raise snscrape.base.EntityUnavailable('User unavailable')
+        return self._graphql_user_results_to_user(obj['data']['user'])
+
+    def get_items(self):
+        if not self._isUserId:
+            if self.entity is None:
+                raise snscrape.base.ScraperException(
+                    f'Could not resolve username {self._user!r} to ID')
+            userId = self.entity.id
+        else:
+            userId = self._user
+
+        paginationVariables = {
+            'userId': userId,
+            'count': 20,
+            'cursor': None,
+            'includePromotedContent': True,
+        }
+        variables = paginationVariables.copy()
+        del variables['cursor']
+        features = {
+            'rweb_lists_timeline_redesign_enabled': True,
+            'responsive_web_graphql_exclude_directive_enabled': True,
+            'verified_phone_label_enabled': False,
+            'creator_subscriptions_tweet_preview_api_enabled': True,
+            'responsive_web_graphql_timeline_navigation_enabled': True,
+            'responsive_web_graphql_skip_user_profile_image_extensions_enabled': False,
+            'tweetypie_unmention_optimization_enabled': True,
+            'responsive_web_edit_tweet_api_enabled': True,
+            'graphql_is_translatable_rweb_tweet_is_translatable_enabled': True,
+            'view_counts_everywhere_api_enabled': True,
+            'longform_notetweets_consumption_enabled': True,
+            'responsive_web_twitter_article_tweet_consumption_enabled': False,
+            'tweet_awards_web_tipping_enabled': False,
+            'freedom_of_speech_not_reach_fetch_enabled': True,
+            'standardized_nudges_misinfo': True,
+            'tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled': True,
+            'longform_notetweets_rich_text_read_enabled': True,
+            'longform_notetweets_inline_media_enabled': True,
+            'responsive_web_media_download_video_enabled': False,
+            'responsive_web_enhance_cards_enabled': False
+        }
+
+        params = {'variables': variables, 'features': features}
+
+        paginationParams = {
+            'variables': paginationVariables,
+            'features': features
+        }
+
+        features = self._get_features('Followers', features)
+
+        # gotPinned = False
+        previousPagesUserIds = set()
+        for obj in self._iter_api_data(
+            self._get_api_url('Followers'),
+            _TwitterAPIType.GRAPHQL,
+            params,
+            paginationParams,
+            instructionsPath=['data', 'user', 'result', 'timeline', 'timeline', 'instructions']
+        ):
+            if not obj['data'] or 'result' not in obj['data']['user']:
+                raise snscrape.base.ScraperException('Empty response')
+            if obj['data']['user']['result']['__typename'] == 'UserUnavailable':
+                raise snscrape.base.EntityUnavailable('User unavailable')
+            instructions = obj['data']['user']['result']['timeline']['timeline']['instructions']
+
+            for instruction in instructions:
+                # i = 0
+                for i, entry in enumerate(instruction.get('entries', [])):
+                    u = entry.get('content', {}).get('itemContent', {}).get('user_results')
+                    if not u:
+                        # _logger.warning(
+                        #     f'Skipping empty response object at position {i}')
+                        continue
+                    # print(u)
+                    user = self._graphql_user_results_to_user(u)
+                    # print((u, user))
+                    if not user or (user.id in previousPagesUserIds):
+                        continue
+                    previousPagesUserIds.add(user.id)
+                    yield user
+
+
 
 
 __getattr__, __dir__ = snscrape.utils.module_deprecation_helper(
